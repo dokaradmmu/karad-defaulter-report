@@ -9,16 +9,17 @@ from datetime import date, timedelta
 EXCLUDED_OFFICES = {"Shenawadi B.O", "Yeralwadi B.O"}
 KPI = 0.90
 
-NAVY        = "1F3864"
-LIGHT_BLUE  = "DCE6F1"
-WHITE       = "FFFFFF"
-RED         = "C00000"
+NAVY = "1F3864"
+LIGHT_BLUE = "DCE6F1"
+WHITE = "FFFFFF"
+RED = "C00000"
 
 SUB_DIV_ORDER = ["SDIP Karad East", "SDIP Vaduj", "ASP Karad West"]
-SHEET_NAMES   = ["Karad East", "Vaduj", "Karad West"]
-TAB_COLOURS   = ["1F3864", "375623", "7F3F00"]
+SHEET_NAMES = ["Karad East", "Vaduj", "Karad West"]
+TAB_COLOURS = ["1F3864", "375623", "7F3F00"]
 
 COL_WIDTHS = [7, 22, 26, 28, 11, 22, 20, 18]
+FULL_COL_WIDTHS = [7, 22, 26, 28, 11, 20, 18]
 
 THIN = Side(style="thin", color="AAAAAA")
 ALL_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -39,7 +40,7 @@ def _apply_border(ws, row, col_start, col_end):
 
 def _merge_write(ws, row, col_start, col_end, value, font, fill, align, height=None):
     ws.merge_cells(start_row=row, start_column=col_start,
-                   end_row=row, end_column=col_end)
+                    end_row=row, end_column=col_end)
     cell = ws.cell(row=row, column=col_start)
     cell.value = value
     cell.font = font
@@ -108,9 +109,20 @@ def sort_offices(df_master, subdiv_name):
     sub = sub.sort_values(["Sub Office Name", "_type_rank", "Office Name"])
     return sub.drop(columns=["_type_rank"])
 
-# ── Write block ───────────────────────────────────────────────────────────────
+def sort_all_offices(df_master):
+    """Sort the full master list across all sub-divisions, in SUB_DIV_ORDER,
+    then Sub Office Name, then Office Type, then Office Name."""
+    subdiv_rank = {name: i for i, name in enumerate(SUB_DIV_ORDER)}
+    type_order = {"HPO": 0, "SPO": 1, "BPO": 2}
+    df = df_master.copy()
+    df["_subdiv_rank"] = df["Sub Division Name"].map(subdiv_rank).fillna(9)
+    df["_type_rank"] = df["Office Type Code"].map(type_order).fillna(9)
+    df = df.sort_values(["_subdiv_rank", "Sub Office Name", "_type_rank", "Office Name"])
+    return df.drop(columns=["_subdiv_rank", "_type_rank"])
+
+# ── Write block (defaulter sheets) ──────────────────────────────────────────
 def _write_block(ws, start_row, offices_df, cum_data, daily_data,
-                 block_type, title_text, col_f_header, report_date_str):
+                  block_type, title_text, col_f_header, report_date_str):
     """
     block_type: 'dp' or 'dss'
     Returns next free row after block.
@@ -172,7 +184,6 @@ def _write_block(ws, start_row, offices_df, cum_data, daily_data,
     for sr, off in enumerate(defaulters, start=1):
         oid = off["Office ID"]
         bg = WHITE if sr % 2 == 1 else LIGHT_BLUE
-
         cum = cum_data.get(oid)
         daily = daily_data.get(oid)
 
@@ -241,13 +252,198 @@ def _write_block(ws, start_row, offices_df, cum_data, daily_data,
 
     return row
 
+# ── Write full report sheet (all offices, single date) ─────────────────────
+def _write_full_sheet(ws, all_offices_df, daily_data, block_type, title_text, report_date_str):
+    """
+    Writes a single-date, all-offices report (no cumulative column, no
+    defaulter filtering — every office in the master appears).
+    block_type: 'dp' or 'dss'
+    """
+    row = 1
+
+    # Title row
+    _merge_write(
+        ws, row, 1, 7,
+        title_text,
+        _font(bold=True, color="000000", size=18),
+        _fill(WHITE),
+        _align("center"),
+        height=51
+    )
+    row += 1
+
+    # Header row
+    count_header = "Total Articles\nInvoiced" if block_type == "dp" else "Total PDM\nArticles"
+    pct_header = f"{'Delivery Productivity' if block_type == 'dp' else 'DSS Usage'} %\n{report_date_str}"
+    headers = [
+        "Sr. No.",
+        "Sub Division Name",
+        "Sub Office Name",
+        "Office Name",
+        "Office Type",
+        f"{count_header} {report_date_str}",
+        pct_header,
+    ]
+    for c, (hdr, w) in enumerate(zip(headers, FULL_COL_WIDTHS), start=1):
+        cell = ws.cell(row=row, column=c, value=hdr)
+        cell.font = _font(bold=True, color="FFFFFF", size=10)
+        cell.fill = _fill(NAVY)
+        cell.alignment = _align("center")
+        cell.border = ALL_BORDER
+        ws.column_dimensions[get_column_letter(c)].width = w
+    ws.row_dimensions[row].height = 40
+    row += 1
+
+    ws.sheet_view.showGridLines = False
+
+    for sr, (_, off) in enumerate(all_offices_df.iterrows(), start=1):
+        oid = off["Office ID"]
+        bg = WHITE if sr % 2 == 1 else LIGHT_BLUE
+        daily = daily_data.get(oid)
+
+        # Col A — Sr No
+        c = ws.cell(row=row, column=1, value=sr)
+        c.font = _font(size=10); c.fill = _fill(bg); c.alignment = _align("center"); c.border = ALL_BORDER
+
+        # Cols B-E — names
+        for ci, val in enumerate([
+            off["Sub Division Name"], off["Sub Office Name"],
+            off["Office Name"], off["Office Type Code"]
+        ], start=2):
+            halign = "left" if ci in (2, 3, 4) else "center"
+            cell = ws.cell(row=row, column=ci, value=val)
+            cell.font = _font(size=10); cell.fill = _fill(bg)
+            cell.alignment = _align(halign); cell.border = ALL_BORDER
+
+        # Col F — daily invoice/pdm count
+        if block_type == "dp":
+            f_val = int(daily["invoice"]) if daily else None
+        else:
+            f_val = int(daily["pdm"]) if daily and daily["pdm"] > 0 else None
+        f_cell = ws.cell(row=row, column=6, value=f_val)
+        f_cell.font = _font(size=10); f_cell.fill = _fill(bg)
+        f_cell.number_format = "#,##0"
+        f_cell.alignment = _align("center"); f_cell.border = ALL_BORDER
+
+        # Col G — daily %
+        g_cell = ws.cell(row=row, column=7)
+        g_cell.fill = _fill(bg); g_cell.alignment = _align("center"); g_cell.border = ALL_BORDER
+
+        if block_type == "dp":
+            if daily:
+                g_val = daily["pct"]
+                g_cell.value = g_val
+                g_cell.number_format = "0.00%"
+                is_red = g_val < KPI
+                g_cell.font = _font(bold=is_red, color=RED if is_red else "000000", size=10)
+            else:
+                g_cell.value = None
+                g_cell.font = _font(size=10)
+        else:  # dss
+            if daily is None or daily["pdm"] == 0:
+                g_cell.value = None
+                g_cell.font = _font(size=10)
+            elif daily["dss"] == 0:
+                g_cell.value = 0.0
+                g_cell.number_format = "0.00%"
+                g_cell.font = _font(bold=True, color=RED, size=10)
+            else:
+                g_val = daily["pct"]
+                g_cell.value = g_val
+                g_cell.number_format = "0.00%"
+                is_red = g_val < KPI
+                g_cell.font = _font(bold=is_red, color=RED if is_red else "000000", size=10)
+
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+    ws.freeze_panes = "A3"
+    return row
+
+# ── Write division-wise summary sheet ───────────────────────────────────────
+def _write_summary_sheet(ws, summary, report_date_str):
+    """
+    summary: {sheet_name: {"dp": int, "dss": int}}
+    Writes a compact table: one row per sub-division + a Total row.
+    """
+    ws.sheet_view.showGridLines = False
+
+    row = 1
+    title = f"Division-wise Defaulter Summary {report_date_str}"
+    _merge_write(
+        ws, row, 1, 3,
+        title,
+        _font(bold=True, color="000000", size=16),
+        _fill(WHITE),
+        _align("center"),
+        height=45
+    )
+    row += 1
+
+    headers = ["Sub Division", "DP Defaulter Count", "DSS Defaulter Count"]
+    widths = [28, 22, 22]
+    for c, (hdr, w) in enumerate(zip(headers, widths), start=1):
+        cell = ws.cell(row=row, column=c, value=hdr)
+        cell.font = _font(bold=True, color="FFFFFF", size=11)
+        cell.fill = _fill(NAVY)
+        cell.alignment = _align("center")
+        cell.border = ALL_BORDER
+        ws.column_dimensions[get_column_letter(c)].width = w
+    ws.row_dimensions[row].height = 30
+    row += 1
+
+    total_dp = 0
+    total_dss = 0
+
+    for sr, sheet_name in enumerate(SHEET_NAMES, start=1):
+        bg = WHITE if sr % 2 == 1 else LIGHT_BLUE
+        dp_count = summary[sheet_name]["dp"]
+        dss_count = summary[sheet_name]["dss"]
+        total_dp += dp_count
+        total_dss += dss_count
+
+        name_cell = ws.cell(row=row, column=1, value=sheet_name)
+        name_cell.font = _font(size=11); name_cell.fill = _fill(bg)
+        name_cell.alignment = _align("left"); name_cell.border = ALL_BORDER
+
+        dp_cell = ws.cell(row=row, column=2, value=dp_count)
+        dp_cell.font = _font(bold=(dp_count > 0), color=RED if dp_count > 0 else "000000", size=11)
+        dp_cell.fill = _fill(bg)
+        dp_cell.alignment = _align("center"); dp_cell.border = ALL_BORDER
+
+        dss_cell = ws.cell(row=row, column=3, value=dss_count)
+        dss_cell.font = _font(bold=(dss_count > 0), color=RED if dss_count > 0 else "000000", size=11)
+        dss_cell.fill = _fill(bg)
+        dss_cell.alignment = _align("center"); dss_cell.border = ALL_BORDER
+
+        ws.row_dimensions[row].height = 22
+        row += 1
+
+    # Total row
+    total_name = ws.cell(row=row, column=1, value="Total — Karad Division")
+    total_name.font = _font(bold=True, color="FFFFFF", size=11)
+    total_name.fill = _fill(NAVY)
+    total_name.alignment = _align("left"); total_name.border = ALL_BORDER
+
+    total_dp_cell = ws.cell(row=row, column=2, value=total_dp)
+    total_dp_cell.font = _font(bold=True, color="FFFFFF", size=11)
+    total_dp_cell.fill = _fill(NAVY)
+    total_dp_cell.alignment = _align("center"); total_dp_cell.border = ALL_BORDER
+
+    total_dss_cell = ws.cell(row=row, column=3, value=total_dss)
+    total_dss_cell.font = _font(bold=True, color="FFFFFF", size=11)
+    total_dss_cell.fill = _fill(NAVY)
+    total_dss_cell.alignment = _align("center"); total_dss_cell.border = ALL_BORDER
+
+    ws.row_dimensions[row].height = 26
+
 # ── Main builder ──────────────────────────────────────────────────────────────
 def build_report(
     master_file, dp_cum_file, dp_daily_file, dss_cum_file, dss_daily_file,
     cum_from: date, cum_to: date, daily_date: date
 ) -> tuple[bytes, dict, list]:
     """
-    Returns: (xlsx_bytes, summary_dict, unmatched_list)
+    Returns: (xlsx_bytes, summary_dict, unmatched_list, date_tag)
     summary_dict = {sheet_name: {"dp": int, "dss": int}}
     unmatched_list = list of office IDs not found in master
     """
@@ -258,14 +454,14 @@ def build_report(
     fmt_file = lambda d: d.strftime("%d_%m_%Y")
 
     cum_from_s = fmt(cum_from)
-    cum_to_s   = fmt(cum_to)
-    daily_s    = fmt(daily_date)
-    report_s   = fmt(report_date)
+    cum_to_s = fmt(cum_to)
+    daily_s = fmt(daily_date)
+    report_s = fmt(report_date)
 
     # Load data
-    master  = load_master(master_file)
-    dp_cum  = calc_dp(load_dp_csv(dp_cum_file))
-    dp_day  = calc_dp(load_dp_csv(dp_daily_file))
+    master = load_master(master_file)
+    dp_cum = calc_dp(load_dp_csv(dp_cum_file))
+    dp_day = calc_dp(load_dp_csv(dp_daily_file))
     dss_cum = calc_dss(load_dss_csv(dss_cum_file))
     dss_day = calc_dss(load_dss_csv(dss_daily_file))
 
@@ -279,6 +475,7 @@ def build_report(
 
     summary = {}
 
+    # ── Existing 3 defaulter sheets (Karad East / Vaduj / Karad West) ──────
     for subdiv, sheet_name, tab_col in zip(SUB_DIV_ORDER, SHEET_NAMES, TAB_COLOURS):
         ws = wb.create_sheet(sheet_name)
         ws.sheet_properties.tabColor = tab_col
@@ -287,7 +484,7 @@ def build_report(
         offices = sort_offices(master, subdiv)
 
         # Count defaulters for summary
-        dp_def_count  = sum(1 for _, o in offices.iterrows() if (d := dp_cum.get(o["Office ID"])) and d["pct"] < KPI)
+        dp_def_count = sum(1 for _, o in offices.iterrows() if (d := dp_cum.get(o["Office ID"])) and d["pct"] < KPI)
         dss_def_count = sum(1 for _, o in offices.iterrows() if (d := dss_cum.get(o["Office ID"])) and d["pct"] < KPI)
         summary[sheet_name] = {"dp": dp_def_count, "dss": dss_def_count}
 
@@ -311,6 +508,25 @@ def build_report(
         )
         col_f_dss = f"DSS Usage %\n{cum_from_s} to {cum_to_s}"
         _write_block(ws, next_row, offices, dss_cum, dss_day, "dss", dss_title, col_f_dss, daily_s)
+
+    # ── New Sheet 4 — Full DP Report (single date, all offices) ────────────
+    all_offices_sorted = sort_all_offices(master)
+
+    ws_full_dp = wb.create_sheet("Full DP Report")
+    ws_full_dp.sheet_properties.tabColor = "548235"
+    full_dp_title = f"Delivery Productivity — All Offices {daily_s}"
+    _write_full_sheet(ws_full_dp, all_offices_sorted, dp_day, "dp", full_dp_title, daily_s)
+
+    # ── New Sheet 5 — Full DSS Report (single date, all offices) ───────────
+    ws_full_dss = wb.create_sheet("Full DSS Report")
+    ws_full_dss.sheet_properties.tabColor = "548235"
+    full_dss_title = f"DSS Usage — All Offices {daily_s}"
+    _write_full_sheet(ws_full_dss, all_offices_sorted, dss_day, "dss", full_dss_title, daily_s)
+
+    # ── New Sheet 6 — Division-wise Summary ─────────────────────────────────
+    ws_summary = wb.create_sheet("Summary")
+    ws_summary.sheet_properties.tabColor = "BF8F00"
+    _write_summary_sheet(ws_summary, summary, report_s)
 
     output = io.BytesIO()
     wb.save(output)
